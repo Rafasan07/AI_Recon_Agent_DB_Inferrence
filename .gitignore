@@ -1,0 +1,6 @@
+.venv
+fastapi-target/venv
+fastapi-target/app/__pycache__
+fastapi-target/research.db
+recon-agent/.env
+recon-agent/results/*

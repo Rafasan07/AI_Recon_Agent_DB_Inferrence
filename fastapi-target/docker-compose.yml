@@ -1,0 +1,21 @@
+version: "3.9"
+
+services:
+  fastapi_high:
+    build: .
+    container_name: sqli_fastapi_high
+    restart: unless-stopped
+    ports:
+      - "8081:8000"
+    volumes:
+      # Persist SQLite DB across container restarts
+      - sqlite_data:/app/data
+    networks:
+      - sqli_net
+
+volumes:
+  sqlite_data:
+
+networks:
+  sqli_net:
+    driver: bridge
