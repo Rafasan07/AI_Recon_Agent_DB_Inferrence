@@ -7,7 +7,6 @@ load_dotenv()
 
 TARGET = { "base_url": "http://localhost:8081" }
 
-# ── LLM clients: API first, local fallback ────────────────────────────────────
 
 def make_clients():
     """Local Ollama only"""
@@ -28,7 +27,6 @@ GROUND_TRUTH = {
     },
 }
 
-# ── Step 1: Ask the AI to generate common e-commerce endpoints ────────────────
 
 ENDPOINT_GEN_PROMPT = """You are a security researcher. 
 Generate a list of exactly 10 common endpoints found in e-commerce REST APIs.
@@ -62,7 +60,6 @@ def generate_endpoints(client, model) -> list:
 
         content = res.choices[0].message.content or ""
 
-        # Safe JSON extraction
         try:
             endpoints = json.loads(content).get("endpoints", [])
         except:
@@ -86,7 +83,6 @@ def generate_endpoints(client, model) -> list:
         return []
 
 
-# ── Step 2: System prompt for the main agent ──────────────────────────────────
 
 SYSTEM_PROMPT = """You are a SQL injection reconnaissance agent in authorized security research.
 Your goal: infer the full SQLite schema by probing API endpoints and reading their responses.
@@ -195,7 +191,6 @@ RESPOND ONLY IN THIS JSON FORMAT:
 """
 
 
-# ── HTTP probe ────────────────────────────────────────────────────────────────
 
 def send_probe(path: str, param: str, value: str) -> dict:
     try:
@@ -213,7 +208,6 @@ def send_probe(path: str, param: str, value: str) -> dict:
         return {"path": path, "param": param, "value": value, "error": str(e)}
 
 
-# ── LLM call ─────────────────────────────────────────────────────────────────
 
 def call_llm(client, model,
              history: list, hypothesis: dict, common_endpoints: list) -> dict:
@@ -239,7 +233,6 @@ def call_llm(client, model,
 
         content = res.choices[0].message.content or ""
 
-        # Safe JSON parsing
         try:
             parsed = json.loads(content)
         except:
@@ -258,7 +251,6 @@ def call_llm(client, model,
     except Exception as e:
         print(f"\n  [local] LLM error: {e}")
         return {}
-# ── Metrics ───────────────────────────────────────────────────────────────────
 
 def compute_metrics(h: dict) -> dict:
     """Compute accuracy metrics and return rich breakdown for display."""
@@ -294,7 +286,6 @@ def compute_metrics(h: dict) -> dict:
     found = gt_t & hyp_t
     trr   = len(found) / len(gt_t) if gt_t else 0
 
-    # Column + type tracking
     table_col_detail = {}
     tg = tf = 0
     type_hits = 0
@@ -312,7 +303,6 @@ def compute_metrics(h: dict) -> dict:
         tg += len(gt_cols)
         tf += len(hits)
 
-        # Type tracking
         hyp_map = {c["name"]: c["type"] for c in hyp_cols}
 
         for col in gt_cols:
@@ -376,7 +366,6 @@ def print_metrics(m: dict, probe_num: int, mode: str = "inline"):
         print(f"  Overall score: {m['score_pct']}%")
         print(f"{'-'*total_w}")
 
-        # Per-table column breakdown
         print(f"  COLUMN DETAIL:\n")
         for table in sorted(GROUND_TRUTH["tables"]):
             detail    = m["per_table"][table]
@@ -400,12 +389,10 @@ def print_metrics(m: dict, probe_num: int, mode: str = "inline"):
         print(f"{'='*total_w}\n")
 
 
-# ── Main agent loop ───────────────────────────────────────────────────────────
 
 def run_agent(max_probes: int = 60):
     client, model = make_clients()
 
-    # ── Phase 0: AI generates the endpoint list ───────────────────────────────
     common_endpoints = generate_endpoints(client, model)
     if not common_endpoints:
         print("Failed to generate endpoints. Exiting.")
@@ -414,9 +401,7 @@ def run_agent(max_probes: int = 60):
     history    = []
     hypothesis = {"tables": [], "columns": {}}
     stagnation = 0
-    tried      = set()   # track path+param+value combos already sent
-
-    # Start with the first generated endpoint + a quote to test for injection
+    tried      = set()  
     first_ep = common_endpoints[0]
     path     = first_ep["path"]
     param    = first_ep["param"]
@@ -429,7 +414,6 @@ def run_agent(max_probes: int = 60):
     for n in range(1, max_probes + 1):
         probe_key = f"{path}:{param}:{value}"
 
-        # Skip if we've sent this exact probe before
         if probe_key in tried:
             ep    = random.choice(common_endpoints)
             path  = ep["path"]
@@ -441,7 +425,6 @@ def run_agent(max_probes: int = 60):
         tried.add(probe_key)
         print(f"[{n:02d}] {path}?{param}={value!r}", end="  ")
 
-        # ── Send probe ────────────────────────────────────────────────────────
         resp = send_probe(path, param, value)
         history.append({
             "probe_num": n,
@@ -449,13 +432,11 @@ def run_agent(max_probes: int = 60):
             "response":  resp,
         })
 
-        # ── Ask LLM to analyze response and pick next probe ───────────────────
         prev_tables = set(hypothesis.get("tables", []))
         llm = call_llm(client, model, history, hypothesis, common_endpoints=common_endpoints)
 
         if not llm:
             stagnation += 1
-            # Fallback: random endpoint from the AI-generated list
             ep    = random.choice(common_endpoints)
             path  = ep["path"]
             param = ep["param"]
@@ -468,10 +449,8 @@ def run_agent(max_probes: int = 60):
         new_findings = llm.get("new_findings", [])
         hint        = llm.get("related_endpoint_hint", "")
 
-        # Stagnation tracking
         stagnation = 0 if new_tables != prev_tables else stagnation + 1
 
-        # Metrics
         m = compute_metrics(hypothesis)
         print_metrics(m, n, mode="inline")
 
@@ -480,14 +459,11 @@ def run_agent(max_probes: int = 60):
         if hint:
             print(f"  ↳ Hint:  {hint}")
 
-        # ── Stopping condition ────────────────────────────────────────────────
         if m["TRR"] >= 0.9 and m["CRR"] >= 0.8:
             print("\n  Schema fully inferred!")
             break
 
-        # ── Next probe decision ───────────────────────────────────────────────
         if stagnation >= 5:
-            # FALLBACK: random pick from AI-generated endpoint list
             ep    = random.choice(common_endpoints)
             path  = ep["path"]
             param = ep["param"]
@@ -495,7 +471,6 @@ def run_agent(max_probes: int = 60):
             stagnation = 0
             print(f"  ⚡ Fallback → random endpoint: {path}")
         else:
-            # Follow LLM's suggestion
             nxt   = llm.get("next_probe", {})
             path  = nxt.get("path",  path)
             param = nxt.get("param", param)
@@ -506,7 +481,6 @@ def run_agent(max_probes: int = 60):
 
         time.sleep(0.3)
 
-    # ── Save results ──────────────────────────────────────────────────────────
     final = compute_metrics(hypothesis)
     print_metrics(final, len(history), mode="full")
 
